@@ -124,8 +124,11 @@ while True:
         # Proceed if there is no trajectory termination signal
         if trajectory.aux["log"]["terminate"] == "":
             # Relax binder to calculate statistics
-            trajectory_relaxed = os.path.join(design_paths["Trajectory/Relaxed"], design_name + ".pdb")
-            pr_relax(trajectory_pdb, trajectory_relaxed)
+            if advanced_settings["rosetta_relax"]:
+                trajectory_relaxed = os.path.join(design_paths["Trajectory/Relaxed"], design_name + ".pdb")
+                pr_relax(trajectory_pdb, trajectory_relaxed)
+            else:
+                trajectory_relaxed = trajectory_pdb
 
             # define binder chain, placeholder in case multi-chain parsing in ColabDesign gets changed
             binder_chain = "B"
@@ -247,12 +250,18 @@ while True:
                         # calculate statistics for each model individually
                         for model_num in prediction_models:
                             mpnn_design_pdb = os.path.join(design_paths["MPNN"], f"{mpnn_design_name}_model{model_num+1}.pdb")
-                            mpnn_design_relaxed = os.path.join(design_paths["MPNN/Relaxed"], f"{mpnn_design_name}_model{model_num+1}.pdb")
+                            if advanced_settings["rosetta_relax"]: 
+                                mpnn_design_relaxed = os.path.join(design_paths["MPNN/Relaxed"], f"{mpnn_design_name}_model{model_num+1}.pdb")
+                            else:
+                                mpnn_design_relaxed = mpnn_design_pdb
 
                             if os.path.exists(mpnn_design_pdb):
                                 # Calculate clashes before and after relaxation
                                 num_clashes_mpnn = calculate_clash_score(mpnn_design_pdb)
-                                num_clashes_mpnn_relaxed = calculate_clash_score(mpnn_design_relaxed)
+                                if advanced_settings["rosetta_relax"]:
+                                    num_clashes_mpnn_relaxed = calculate_clash_score(mpnn_design_relaxed)
+                                else:
+                                    num_clashes_mpnn_relaxed = num_clashes_mpnn
 
                                 # analyze interface scores for relaxed af2 trajectory
                                 mpnn_interface_scores, mpnn_interface_AA, mpnn_interface_residues = score_interface(mpnn_design_relaxed, binder_chain)
@@ -298,7 +307,7 @@ while True:
                                 })
 
                                 # save space by removing unrelaxed predicted mpnn complex pdb?
-                                if advanced_settings["remove_unrelaxed_complex"]:
+                                if advanced_settings["remove_unrelaxed_complex"] and advanced_settings["rosetta_relax"]:
                                     os.remove(mpnn_design_pdb)
 
                         # calculate complex averages
@@ -371,7 +380,10 @@ while True:
 
                         # Output the number part of the key
                         best_model_number = highest_plddt_key - 10
-                        best_model_pdb = os.path.join(design_paths["MPNN/Relaxed"], f"{mpnn_design_name}_model{best_model_number}.pdb")
+                        if advanced_settings["rosetta_relax"]:
+                            best_model_pdb = os.path.join(design_paths["MPNN/Relaxed"], f"{mpnn_design_name}_model{best_model_number}.pdb")
+                        else:
+                            best_model_pdb = os.path.join(design_paths["MPNN"], f"{mpnn_design_name}_model{best_model_number}.pdb")
 
                         # run design data against filter thresholds
                         filter_conditions = check_filters(mpnn_data, design_labels, filters)

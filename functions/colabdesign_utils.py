@@ -295,12 +295,11 @@ def predict_binder_complex(prediction_model, binder_sequence, mpnn_design_name, 
     # AF2 filters passed, contuing with relaxation
     for model_num in prediction_models:
         complex_pdb = os.path.join(design_paths["MPNN"], f"{mpnn_design_name}_model{model_num+1}.pdb")
-        if pass_af2_filters:
+        if not pass_af2_filters and os.path.exists(complex_pdb):
+            os.remove(complex_pdb)
+        elif advanced_settings["rosetta_relax"] and os.path.exists(complex_pdb):
             mpnn_relaxed = os.path.join(design_paths["MPNN/Relaxed"], f"{mpnn_design_name}_model{model_num+1}.pdb")
             pr_relax(complex_pdb, mpnn_relaxed)
-        else:
-            if os.path.exists(complex_pdb):
-                os.remove(complex_pdb)
 
     return prediction_stats, pass_af2_filters
 
