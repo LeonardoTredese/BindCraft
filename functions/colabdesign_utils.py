@@ -33,9 +33,6 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
     if target_hotspot_residues == "":
         target_hotspot_residues = None
 
-    af_model.prep_inputs(pdb_filename=starting_pdb, chain=chain, binder_len=length, hotspot=target_hotspot_residues, seed=seed, rm_aa=advanced_settings["omit_AAs"],
-                        rm_target_seq=advanced_settings["rm_template_seq_design"], rm_target_sc=advanced_settings["rm_template_sc_design"])
-
     ### Update weights based on specified settings
     af_model.opt["weights"].update({"pae":advanced_settings["weights_pae_intra"],
                                     "plddt":advanced_settings["weights_plddt"],
@@ -67,6 +64,9 @@ def binder_hallucination(design_name, starting_pdb, chain, target_hotspot_residu
 
     # calculate the number of mutations to do based on the length of the protein
     greedy_tries = math.ceil(length * (advanced_settings["greedy_percentage"] / 100))
+
+    af_model.prep_inputs(pdb_filename=starting_pdb, chain=chain, binder_len=length, hotspot=target_hotspot_residues, seed=seed, rm_aa=advanced_settings["omit_AAs"],
+                        rm_target_seq=advanced_settings["rm_template_seq_design"], rm_target_sc=advanced_settings["rm_template_sc_design"])
 
     ### start design algorithm based on selection
     if advanced_settings["design_algorithm"] == '2stage':
@@ -365,85 +365,83 @@ def get_best_plddt(af_model, length):
     return round(np.mean(af_model._tmp["best"]["aux"]["plddt"][-length:]),2)
 
 # Define radius of gyration loss for colabdesign
+def loss_rg(inputs, outputs, cfg, **kwargs):
+    xyz = outputs["structure_module"]
+    ca = xyz["final_atom_positions"][:,residue_constants.atom_order["CA"]]
+    ca = ca[-cfg["binder_len"]:]
+    rg = jnp.sqrt(jnp.square(ca - ca.mean(0)).sum(-1).mean() + 1e-8)
+    rg_th = 2.38 * ca.shape[0] ** 0.365
+    rg = jax.nn.elu(rg - rg_th)
+    return {"rg":rg}
+
 def add_rg_loss(self, weight=0.1):
     '''add radius of gyration loss'''
-    def loss_fn(inputs, outputs):
-        xyz = outputs["structure_module"]
-        ca = xyz["final_atom_positions"][:,residue_constants.atom_order["CA"]]
-        ca = ca[-self._binder_len:]
-        rg = jnp.sqrt(jnp.square(ca - ca.mean(0)).sum(-1).mean() + 1e-8)
-        rg_th = 2.38 * ca.shape[0] ** 0.365
-
-        rg = jax.nn.elu(rg - rg_th)
-        return {"rg":rg}
-
-    self._callbacks["model"]["loss"].append(loss_fn)
+    self._callbacks["model"]["loss"].append(loss_rg)
     self.opt["weights"]["rg"] = weight
 
 # Define interface pTM loss for colabdesign
+def loss_iptm(inputs, outputs, **kwargs):
+    p = 1 - get_ptm(inputs, outputs, interface=True)
+    i_ptm = mask_loss(p)
+    return {"i_ptm": i_ptm}
+
 def add_i_ptm_loss(self, weight=0.1):
-    def loss_iptm(inputs, outputs):
-        p = 1 - get_ptm(inputs, outputs, interface=True)
-        i_ptm = mask_loss(p)
-        return {"i_ptm": i_ptm}
-    
     self._callbacks["model"]["loss"].append(loss_iptm)
     self.opt["weights"]["i_ptm"] = weight
 
 # add helicity loss
+def binder_helicity(inputs, outputs, cfg, **kwargs):  
+  if "offset" in inputs:
+    offset = inputs["offset"]
+  else:
+    idx = inputs["residue_index"].flatten()
+    offset = idx[:,None] - idx[None,:]
+  binder_len, target_len = cfg["binder_len"], cfg["target_len"]
+  # define distogram
+  dgram = outputs["distogram"]["logits"]
+  dgram_bins = get_dgram_bins(outputs)
+  mask_2d = np.outer(np.append(np.zeros(target_len), np.ones(binder_len)), np.append(np.zeros(target_len), np.ones(binder_len)))
+  x = _get_con_loss(dgram, dgram_bins, cutoff=6.0, binary=True)
+  if offset is None:
+    if mask_2d is None:
+      helix_loss = jnp.diagonal(x,3).mean()
+    else:
+      helix_loss = jnp.diagonal(x * mask_2d,3).sum() + (jnp.diagonal(mask_2d,3).sum() + 1e-8)
+  else:
+    mask = offset == 3
+    if mask_2d is not None:
+      mask = jnp.where(mask_2d,mask,0)
+    helix_loss = jnp.where(mask,x,0.0).sum() / (mask.sum() + 1e-8)
+  return {"helix":helix_loss}
+
 def add_helix_loss(self, weight=0):
-    def binder_helicity(inputs, outputs):  
-      if "offset" in inputs:
-        offset = inputs["offset"]
-      else:
-        idx = inputs["residue_index"].flatten()
-        offset = idx[:,None] - idx[None,:]
-
-      # define distogram
-      dgram = outputs["distogram"]["logits"]
-      dgram_bins = get_dgram_bins(outputs)
-      mask_2d = np.outer(np.append(np.zeros(self._target_len), np.ones(self._binder_len)), np.append(np.zeros(self._target_len), np.ones(self._binder_len)))
-
-      x = _get_con_loss(dgram, dgram_bins, cutoff=6.0, binary=True)
-      if offset is None:
-        if mask_2d is None:
-          helix_loss = jnp.diagonal(x,3).mean()
-        else:
-          helix_loss = jnp.diagonal(x * mask_2d,3).sum() + (jnp.diagonal(mask_2d,3).sum() + 1e-8)
-      else:
-        mask = offset == 3
-        if mask_2d is not None:
-          mask = jnp.where(mask_2d,mask,0)
-        helix_loss = jnp.where(mask,x,0.0).sum() / (mask.sum() + 1e-8)
-
-      return {"helix":helix_loss}
     self._callbacks["model"]["loss"].append(binder_helicity)
     self.opt["weights"]["helix"] = weight
 
 # add N- and C-terminus distance loss
+def termini_loss(inputs, outputs, cfg, **kwargs):
+    xyz = outputs["structure_module"]
+    ca = xyz["final_atom_positions"][:, residue_constants.atom_order["CA"]]
+    ca = ca[cfg["binder_len"]:]  # Considering only the last _binder_len residues
+
+    # Extract N-terminus (first CA atom) and C-terminus (last CA atom)
+    n_terminus = ca[0]
+    c_terminus = ca[-1]
+
+    # Compute the distance between N and C termini
+    termini_distance = jnp.linalg.norm(n_terminus - c_terminus)
+
+    # Compute the deviation from the threshold distance using ELU activation
+    deviation = jax.nn.elu(termini_distance - threshold_distance)
+
+    # Ensure the loss is never lower than 0
+    termini_distance_loss = jax.nn.relu(deviation)
+    return {"NC": termini_distance_loss}
+
 def add_termini_distance_loss(self, weight=0.1, threshold_distance=7.0):
     '''Add loss penalizing the distance between N and C termini'''
-    def loss_fn(inputs, outputs):
-        xyz = outputs["structure_module"]
-        ca = xyz["final_atom_positions"][:, residue_constants.atom_order["CA"]]
-        ca = ca[-self._binder_len:]  # Considering only the last _binder_len residues
-
-        # Extract N-terminus (first CA atom) and C-terminus (last CA atom)
-        n_terminus = ca[0]
-        c_terminus = ca[-1]
-
-        # Compute the distance between N and C termini
-        termini_distance = jnp.linalg.norm(n_terminus - c_terminus)
-
-        # Compute the deviation from the threshold distance using ELU activation
-        deviation = jax.nn.elu(termini_distance - threshold_distance)
-
-        # Ensure the loss is never lower than 0
-        termini_distance_loss = jax.nn.relu(deviation)
-        return {"NC": termini_distance_loss}
-
     # Append the loss function to the model callbacks
-    self._callbacks["model"]["loss"].append(loss_fn)
+    self._callbacks["model"]["loss"].append(termini_loss)
     self.opt["weights"]["NC"] = weight
 
 # plot design trajectory losses
