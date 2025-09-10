@@ -67,6 +67,7 @@ print(f"Filtering designs based on {filters_file}")
 script_start_time = time.time()
 trajectory_n = 1
 accepted_designs = 0
+length_sampler = create_length_sampler(target_settings["lengths"], repeats = advanced_settings.get("repeat_lengths", 1))
 
 ### start design loop
 while True:
@@ -91,8 +92,7 @@ while True:
     seed = int(np.random.randint(0, high=999999, size=1, dtype=int)[0])
 
     # sample binder design length randomly from defined distribution
-    samples = np.arange(min(target_settings["lengths"]), max(target_settings["lengths"]) + 1)
-    length = np.random.choice(samples)
+    length = next(length_sampler)
 
     # load desired helicity value to sample different secondary structure contents
     helicity_value = load_helicity(advanced_settings)

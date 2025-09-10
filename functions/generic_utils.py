@@ -11,6 +11,15 @@ import random
 import math
 import pandas as pd
 import numpy as np
+import itertools
+
+def create_length_sampler(lengths, repeats = 1):
+    l, L = min(lengths), max(lengths) + 1
+    while True:
+        sample = np.random.randint(l, L)
+        for _ in range(repeats):
+            yield sample
+    
 
 # Define labels for dataframes
 def generate_dataframe_labels():
